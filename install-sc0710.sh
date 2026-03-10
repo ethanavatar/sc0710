@@ -459,6 +459,59 @@ else
     log "No 4K Pro card detected, skipping firmware extraction"
 fi
 
+# 3.6 Firmware Service (4K Pro only)
+# Install a systemd service that ensures the ECP5 firmware file is present
+# on every boot and triggers a driver reload if the FPGA wasn't programmed.
+# This handles cold boots where the ECP5 SRAM is wiped.
+if lspci -d ::0400 -nn 2>/dev/null | grep -qi "1cfa:0012"; then
+    msg "4K Pro detected — installing firmware service..."
+
+    # Install the firmware service script
+    FW_SERVICE_SCRIPT="/usr/local/libexec/sc0710-firmware.sh"
+    FW_SERVICE_SCRIPT_SRC="$SRC_DEST/sc0710-firmware.sh"
+    mkdir -p "$(dirname "$FW_SERVICE_SCRIPT")"
+    if [[ -f "$FW_SERVICE_SCRIPT_SRC" ]]; then
+        cp "$FW_SERVICE_SCRIPT_SRC" "$FW_SERVICE_SCRIPT"
+    elif [[ -f "./sc0710-firmware.sh" ]]; then
+        cp "./sc0710-firmware.sh" "$FW_SERVICE_SCRIPT"
+    else
+        warning "sc0710-firmware.sh not found. Creating from embedded copy."
+        # The script is part of the source tree; if missing, skip
+        FW_SERVICE_SCRIPT=""
+    fi
+
+    if [[ -n "$FW_SERVICE_SCRIPT" ]]; then
+        chmod +x "$FW_SERVICE_SCRIPT"
+
+        cat > "/etc/systemd/system/sc0710-firmware.service" <<FWEOF
+[Unit]
+Description=SC0710 4K Pro ECP5 Firmware Loader
+After=local-fs.target network-online.target
+Wants=network-online.target
+Before=sc0710-build.service
+ConditionPathExists=$FW_SERVICE_SCRIPT
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash $FW_SERVICE_SCRIPT
+RemainAfterExit=yes
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+FWEOF
+
+        systemctl daemon-reload
+        systemctl enable sc0710-firmware.service
+        msg2 "Firmware service enabled: sc0710-firmware.service"
+        log "Created and enabled sc0710-firmware.service"
+    fi
+else
+    log "No 4K Pro card detected, skipping firmware service installation"
+fi
+
 # 4. Auto-Update / DKMS Selection
 USE_DKMS=false
 echo ""
@@ -884,6 +937,70 @@ case "\$1" in
             fi
         fi
         echo ""
+        # --- ECP5 Firmware Status (4K Pro only) ---
+        # Check if any bound device is a 4K Pro (subsystem 1cfa:0012)
+        IS_4KP=false
+        for pcidir in /sys/bus/pci/drivers/sc0710/0*; do
+            if [[ -d "\$pcidir" ]]; then
+                SUBVEN=\$(cat "\$pcidir/subsystem_vendor" 2>/dev/null | grep -iE '0x[0-9a-f]+' -o | sed 's/0x//')
+                SUBDEV=\$(cat "\$pcidir/subsystem_device" 2>/dev/null | grep -iE '0x[0-9a-f]+' -o | sed 's/0x//')
+                if [[ "\$SUBVEN:\$SUBDEV" == "1cfa:0012" ]]; then
+                    IS_4KP=true
+                    break
+                fi
+            fi
+        done
+        # Fallback: check lspci if driver not loaded
+        if [[ "\$IS_4KP" == "false" ]]; then
+            if lspci -d ::0400 -nn 2>/dev/null | grep -qi "1cfa:0012"; then
+                IS_4KP=true
+            fi
+        fi
+        if [[ "\$IS_4KP" == "true" ]]; then
+            echo -e "\${BLUE}::\${NC} \${BOLD}ECP5 Firmware\${NC}"
+            # Check firmware file presence
+            FW_FOUND=false
+            FW_LOCATION=""
+            if [[ -f "/lib/firmware/sc0710/SC0710.FWI.HEX" ]]; then
+                FW_FOUND=true
+                FW_LOCATION="/lib/firmware/sc0710/SC0710.FWI.HEX"
+            elif [[ -f "/var/lib/sc0710/firmware/SC0710.FWI.HEX" ]]; then
+                FW_FOUND=true
+                FW_LOCATION="/var/lib/sc0710/firmware/SC0710.FWI.HEX"
+            elif [[ -f "/etc/firmware/sc0710/SC0710.FWI.HEX" ]]; then
+                FW_FOUND=true
+                FW_LOCATION="/etc/firmware/sc0710/SC0710.FWI.HEX"
+            fi
+            if [[ "\$FW_FOUND" == "true" ]]; then
+                echo -e "   \${GREEN}●\${NC} Firmware file present"
+                echo -e "     Location: \${FW_LOCATION}"
+            else
+                echo -e "   \${RED}○\${NC} Firmware file missing"
+                echo -e "     Run: \${BOLD}sudo bash /usr/local/libexec/sc0710-firmware.sh\${NC}"
+            fi
+            # Check ECP5 FPGA programming status from dmesg
+            ECP5_MSG=\$(dmesg 2>/dev/null | grep -E "sc0710.*ECP5" | tail -1)
+            if echo "\$ECP5_MSG" | grep -q "firmware programmed successfully"; then
+                echo -e "   \${GREEN}●\${NC} ECP5 FPGA programmed"
+            elif echo "\$ECP5_MSG" | grep -q "already configured"; then
+                echo -e "   \${GREEN}●\${NC} ECP5 FPGA configured (warm reboot)"
+            elif echo "\$ECP5_MSG" | grep -q "Failed to load firmware"; then
+                echo -e "   \${RED}○\${NC} ECP5 FPGA not programmed (firmware load failed)"
+            elif echo "\$ECP5_MSG" | grep -q "programming failed"; then
+                echo -e "   \${RED}○\${NC} ECP5 FPGA programming failed"
+            elif [[ -n "\$ECP5_MSG" ]]; then
+                echo -e "   \${YELLOW}○\${NC} ECP5 status: \$(echo "\$ECP5_MSG" | sed 's/.*sc0710[^:]*: //')"
+            else
+                echo -e "   \${YELLOW}○\${NC} ECP5 status unknown (module may not be loaded)"
+            fi
+            # Check firmware service status
+            if systemctl is-enabled sc0710-firmware.service >/dev/null 2>&1; then
+                echo -e "   \${GREEN}●\${NC} Firmware service enabled"
+            else
+                echo -e "   \${YELLOW}○\${NC} Firmware service not installed"
+            fi
+            echo ""
+        fi
         echo -e "\${BLUE}::\${NC} \${BOLD}Debug Mode\${NC}"
         DBG_PATH=""
         if [[ -f /sys/module/sc0710/parameters/sc0710_debug_mode ]]; then
@@ -1025,8 +1142,15 @@ case "\$1" in
         rm -rf "/usr/src/\${DRV_NAME}-"*
         rm -f "/etc/modules-load.d/\${DRV_NAME}.conf"
         rm -f "/etc/modprobe.d/\${DRV_NAME}.conf"
+        rm -f "/etc/modprobe.d/\${DRV_NAME}-params.conf"
+        # Remove firmware service if installed
+        systemctl stop sc0710-firmware.service 2>/dev/null || true
+        systemctl disable sc0710-firmware.service 2>/dev/null || true
+        rm -f /etc/systemd/system/sc0710-firmware.service
+        rm -f /usr/local/libexec/sc0710-firmware.sh
+        systemctl daemon-reload 2>/dev/null || true
         rm -f "/usr/local/bin/sc0710-cli"
-        echo -e "\${GREEN}[OK]\${NC} Driver and CLI tool removed."
+        echo -e "\${GREEN}[OK]\${NC} Driver, firmware service, and CLI tool removed."
         ;;
     -v|--version)
         echo -e "\${BOLD}SC0710\${NC} Driver Control Utility"

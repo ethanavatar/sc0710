@@ -20,6 +20,7 @@
 
 #include <linux/firmware.h>
 #include <linux/vmalloc.h>
+#include <linux/fs.h>
 #include "sc0710.h"
 
 struct sc0710_board sc0710_boards[] = {
@@ -118,6 +119,58 @@ void sc0710_gpio_setup(struct sc0710_dev *dev)
 #define FWI_MAGIC_1      0x11
 #define FWI_XOR_FIRST    0x5A
 #define FWI_XOR_SECOND   0xA5
+
+/* Alternative firmware paths for atomic/immutable distros.
+ * On these systems, /lib/firmware/ is read-only (part of the OSTree image).
+ * The firmware service places the file in a writable location instead.
+ * The driver tries request_firmware() first (standard path), then falls
+ * back to loading directly from these paths.
+ */
+static const char * const firmware_alt_paths[] = {
+	"/var/lib/sc0710/firmware/SC0710.FWI.HEX",
+	"/etc/firmware/sc0710/SC0710.FWI.HEX",
+	NULL
+};
+
+/* Load firmware from an explicit filesystem path.
+ * Returns a vmalloc'd buffer and sets *out_size on success, or NULL on failure.
+ * Caller must vfree() the returned buffer.
+ */
+static void *sc0710_load_firmware_from_path(const char *path, size_t *out_size)
+{
+	struct file *fp;
+	loff_t file_size;
+	loff_t pos = 0;
+	void *buf;
+	ssize_t nread;
+
+	fp = filp_open(path, O_RDONLY, 0);
+	if (IS_ERR(fp))
+		return NULL;
+
+	file_size = i_size_read(file_inode(fp));
+	if (file_size <= 0 || file_size > (16 * 1024 * 1024)) {
+		filp_close(fp, NULL);
+		return NULL;
+	}
+
+	buf = vmalloc(file_size);
+	if (!buf) {
+		filp_close(fp, NULL);
+		return NULL;
+	}
+
+	nread = kernel_read(fp, buf, file_size, &pos);
+	filp_close(fp, NULL);
+
+	if (nread != file_size) {
+		vfree(buf);
+		return NULL;
+	}
+
+	*out_size = file_size;
+	return buf;
+}
 
 static void ecp5_spi_reset(struct sc0710_dev *dev)
 {
@@ -360,7 +413,11 @@ static int ecp5_program_bitstream(struct sc0710_dev *dev, const u8 *data, u32 le
 /* Load and program ECP5 firmware if outdated */
 static int sc0710_ecp5_firmware_check(struct sc0710_dev *dev)
 {
-	const struct firmware *fw;
+	const struct firmware *fw = NULL;
+	void *alt_buf = NULL;
+	size_t alt_size = 0;
+	const u8 *fw_data;
+	size_t fw_size;
 	u32 idcode, half_size, status;
 	u8 *decoded;
 	int ret, i;
@@ -380,24 +437,57 @@ static int sc0710_ecp5_firmware_check(struct sc0710_dev *dev)
 
 	printk(KERN_INFO "%s: Programming ECP5 firmware\n", dev->name);
 
+	/* Try standard kernel firmware loader first (/lib/firmware/) */
 	ret = request_firmware(&fw, "sc0710/SC0710.FWI.HEX", &dev->pci->dev);
 	if (ret) {
-		printk(KERN_ERR "%s: Failed to load firmware sc0710/SC0710.FWI.HEX: %d\n",
-			dev->name, ret);
-		printk(KERN_ERR "%s: Place SC0710.FWI.HEX in /lib/firmware/sc0710/\n",
+		/* Standard path failed. On atomic/immutable distros, /lib/firmware/
+		 * is read-only and the firmware is stored elsewhere. Try the
+		 * alternative paths that the firmware service uses.
+		 */
+		printk(KERN_INFO "%s: Firmware not found in /lib/firmware/, trying alternative paths\n",
 			dev->name);
-		return ret;
+
+		for (i = 0; firmware_alt_paths[i]; i++) {
+			alt_buf = sc0710_load_firmware_from_path(
+				firmware_alt_paths[i], &alt_size);
+			if (alt_buf) {
+				printk(KERN_INFO "%s: Loaded firmware from %s (%zu bytes)\n",
+					dev->name, firmware_alt_paths[i], alt_size);
+				break;
+			}
+		}
+
+		if (!alt_buf) {
+			printk(KERN_ERR "%s: Failed to load firmware sc0710/SC0710.FWI.HEX: %d\n",
+				dev->name, ret);
+			printk(KERN_ERR "%s: Place SC0710.FWI.HEX in /lib/firmware/sc0710/\n",
+				dev->name);
+			printk(KERN_ERR "%s: Or in /var/lib/sc0710/firmware/ for atomic distros\n",
+				dev->name);
+			return ret;
+		}
+	}
+
+	/* Point fw_data/fw_size to whichever source succeeded */
+	if (fw) {
+		fw_data = fw->data;
+		fw_size = fw->size;
+	} else {
+		fw_data = alt_buf;
+		fw_size = alt_size;
 	}
 
 	/* Validate header */
-	if (fw->size < FWI_HEADER_SIZE + 2 ||
-	    fw->data[0] != FWI_MAGIC_0 || fw->data[1] != FWI_MAGIC_1) {
+	if (fw_size < FWI_HEADER_SIZE + 2 ||
+	    fw_data[0] != FWI_MAGIC_0 || fw_data[1] != FWI_MAGIC_1) {
 		printk(KERN_ERR "%s: Invalid firmware file header\n", dev->name);
-		release_firmware(fw);
+		if (fw)
+			release_firmware(fw);
+		vfree(alt_buf);
 		return -EINVAL;
 	}
 
-	half_size = (fw->size - FWI_HEADER_SIZE) / 2;
+	half_size = (fw_size - FWI_HEADER_SIZE) / 2;
 
 	/* FWI format: 16-byte header + two halves with swapped order.
 	 * Full .bit file = (second half XOR 0xA5) + (first half XOR 0x5A).
@@ -405,19 +495,23 @@ static int sc0710_ecp5_firmware_check(struct sc0710_dev *dev)
 	 */
 	decoded = vmalloc(half_size * 2);
 	if (!decoded) {
-		release_firmware(fw);
+		if (fw)
+			release_firmware(fw);
+		vfree(alt_buf);
 		return -ENOMEM;
 	}
 
 	/* First part of bitstream: FWI second half XOR 0xA5 */
 	for (i = 0; i < half_size; i++)
-		decoded[i] = fw->data[FWI_HEADER_SIZE + half_size + i] ^ FWI_XOR_SECOND;
+		decoded[i] = fw_data[FWI_HEADER_SIZE + half_size + i] ^ FWI_XOR_SECOND;
 
 	/* Second part of bitstream: FWI first half XOR 0x5A */
 	for (i = 0; i < half_size; i++)
-		decoded[half_size + i] = fw->data[FWI_HEADER_SIZE + i] ^ FWI_XOR_FIRST;
+		decoded[half_size + i] = fw_data[FWI_HEADER_SIZE + i] ^ FWI_XOR_FIRST;
 
-	release_firmware(fw);
+	if (fw)
+		release_firmware(fw);
+	vfree(alt_buf);
 
 	ret = ecp5_program_bitstream(dev, decoded, half_size * 2);
 	vfree(decoded);
