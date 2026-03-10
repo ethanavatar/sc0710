@@ -488,10 +488,17 @@ EOF
         warning "DKMS already has $DRV_NAME installed."
         if confirm "Remove existing and reinstall?" "Y"; then
             msg2 "Removing all existing DKMS versions..."
-            # Remove all versions found
             for ver in $(dkms status | grep "$DRV_NAME" | sed 's/.*\/\([^,]*\),.*/\1/'); do
-                dkms remove -m "$DRV_NAME" -v "$ver" --all >/dev/null 2>&1 || true
+                if ! dkms remove -m "$DRV_NAME" -v "$ver" --all >/dev/null 2>&1; then
+                    # If dkms remove fails (missing source directory), clean up manually.
+                    # This is what DKMS means by "Manual intervention is required."
+                    msg2 "Cleaning stale DKMS entry: $DRV_NAME/$ver"
+                    rm -rf "/var/lib/dkms/${DRV_NAME}/${ver}" 2>/dev/null || true
+                    rm -rf "/usr/src/${DRV_NAME}-${ver}" 2>/dev/null || true
+                fi
             done
+            # Remove any leftover top-level DKMS directory if empty
+            rmdir "/var/lib/dkms/${DRV_NAME}" 2>/dev/null || true
         else
             msg2 "Skipping DKMS rebuild. Keeping existing installation."
             USE_DKMS=false
@@ -950,14 +957,67 @@ case "\$1" in
 
     -U|--update)
         echo -e "\${BLUE}::\${NC} Checking for updates..."
-        echo -e "\${BLUE}::\${NC} Re-running installer from GitHub..."
-        exec bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Nakildias/sc0710/main/install-sc0710.sh)"
+
+        # Find the DKMS source directory
+        DKMS_SRC=""
+        for d in /usr/src/\${DRV_NAME}-*; do
+            [[ -d "\$d" ]] && DKMS_SRC="\$d" && break
+        done
+
+        if [[ -z "\$DKMS_SRC" ]]; then
+            echo -e "\${RED}[ERROR]\${NC} DKMS source not found. Re-run the full installer."
+            exit 1
+        fi
+
+        # Pull latest source
+        echo -e "\${BLUE}::\${NC} Pulling latest source..."
+        if ! git -C "\$DKMS_SRC" pull --ff-only 2>/dev/null; then
+            echo -e "\${BLUE}::\${NC} Git pull failed, re-downloading..."
+            exec bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Nakildias/sc0710/main/install-sc0710.sh)"
+        fi
+
+        # Read updated version
+        NEW_VER="\$CURRENT_VERSION"
+        if [[ -f "\$DKMS_SRC/version" ]]; then
+            NEW_VER=\$(cat "\$DKMS_SRC/version" | tr -d '[:space:]')
+        fi
+
+        # Unload the current module
+        if lsmod | grep -q \$DRV_NAME; then
+            echo -e "\${BLUE}::\${NC} Unloading current module..."
+            \$0 --unload
+        fi
+
+        # Rebuild via DKMS
+        echo -e "\${BLUE}::\${NC} Rebuilding module via DKMS..."
+        KVER=\$(uname -r)
+        # Remove old DKMS build (handle missing source directory gracefully)
+        if ! dkms remove -m \$DRV_NAME -v "\$CURRENT_VERSION" -k "\$KVER" --force 2>/dev/null; then
+            rm -rf "/var/lib/dkms/\${DRV_NAME}/\${CURRENT_VERSION}" 2>/dev/null || true
+        fi
+        if dkms install -m \$DRV_NAME -v "\$NEW_VER" -k "\$KVER" 2>&1; then
+            echo -e "\${GREEN}[OK]\${NC} Module rebuilt successfully."
+        else
+            echo -e "\${RED}[ERROR]\${NC} DKMS rebuild failed."
+            exit 1
+        fi
+
+        # Reload the module
+        echo -e "\${BLUE}::\${NC} Loading updated module..."
+        if modprobe \$DRV_NAME 2>/dev/null; then
+            echo -e "\${GREEN}[OK]\${NC} Driver updated and loaded (v\${NEW_VER})."
+        else
+            echo -e "\${YELLOW}[WARNING]\${NC} Module rebuilt but failed to load. Try: sc0710-cli --load"
+        fi
         ;;
     -r|-R|--remove)
         echo -e "\${BLUE}::\${NC} Uninstalling driver and utility..."
         for ver in \$(dkms status | grep "\$DRV_NAME" | sed 's/.*\/\([^,]*\),.*/\1/'); do
-            dkms remove -m "\$DRV_NAME" -v "\$ver" --all >/dev/null 2>&1 || true
+            if ! dkms remove -m "\$DRV_NAME" -v "\$ver" --all >/dev/null 2>&1; then
+                rm -rf "/var/lib/dkms/\${DRV_NAME}/\${ver}" 2>/dev/null || true
+            fi
         done
+        rmdir "/var/lib/dkms/\${DRV_NAME}" 2>/dev/null || true
         rm -rf "/usr/src/\${DRV_NAME}-"*
         rm -f "/etc/modules-load.d/\${DRV_NAME}.conf"
         rm -f "/etc/modprobe.d/\${DRV_NAME}.conf"

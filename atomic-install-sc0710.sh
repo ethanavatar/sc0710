@@ -427,26 +427,27 @@ fi
 
 # --- 5.5. Firmware Extraction (4K Pro only) ---
 if lspci -d ::0400 -nn 2>/dev/null | grep -qi "1cfa:0012"; then
-    FIRMWARE_PATH="/lib/firmware/sc0710/SC0710.FWI.HEX"
-    if [[ -f "$FIRMWARE_PATH" ]]; then
-        msg2 "4K Pro firmware already present at $FIRMWARE_PATH"
+    FIRMWARE_STORE="/var/lib/sc0710/firmware"
+    FIRMWARE_FILE="SC0710.FWI.HEX"
+    if [[ -f "$FIRMWARE_STORE/$FIRMWARE_FILE" || -f "/lib/firmware/sc0710/$FIRMWARE_FILE" ]]; then
+        msg2 "4K Pro firmware already present"
     else
-        msg "4K Pro detected — extracting ECP5 firmware..."
-        EXTRACT_SCRIPT="$SRC_DIR/extract-firmware.sh"
+        msg "4K Pro detected — extracting ECP5 firmware (atomic)..."
+        EXTRACT_SCRIPT="$SRC_DIR/atomic-extract-firmware.sh"
         if [[ -f "$EXTRACT_SCRIPT" ]]; then
             chmod +x "$EXTRACT_SCRIPT"
             if bash "$EXTRACT_SCRIPT"; then
                 msg2 "Firmware extraction completed."
-                log "4K Pro firmware extracted to $FIRMWARE_PATH"
+                log "4K Pro firmware extracted via atomic script"
             else
                 warning "Firmware extraction failed. The driver will load but ECP5 programming will not work."
                 warning "You can retry manually: sudo bash $EXTRACT_SCRIPT"
                 log "WARNING: Firmware extraction failed"
             fi
         else
-            warning "extract-firmware.sh not found in source tree. Firmware must be installed manually."
-            warning "Place SC0710.FWI.HEX in /lib/firmware/sc0710/"
-            log "WARNING: extract-firmware.sh missing from source"
+            warning "atomic-extract-firmware.sh not found in source tree. Firmware must be installed manually."
+            warning "Place SC0710.FWI.HEX in /var/lib/sc0710/firmware/ and symlink to /etc/firmware/sc0710/"
+            log "WARNING: atomic-extract-firmware.sh missing from source"
         fi
     fi
 else
@@ -1073,8 +1074,55 @@ case "\$1" in
         ;;
     -U|--update)
         echo -e "\${BLUE}::\${NC} Checking for updates..."
-        echo -e "\${BLUE}::\${NC} Re-running atomic installer from GitHub..."
-        exec bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Nakildias/sc0710/main/atomic-install-sc0710.sh)"
+
+        if [[ ! -d "\$SRC_DIR/.git" ]]; then
+            echo -e "\${RED}[ERROR]\${NC} Source directory is not a git repository. Re-run the full installer."
+            exit 1
+        fi
+
+        # Pull latest source
+        echo -e "\${BLUE}::\${NC} Pulling latest source..."
+        if ! git -C "\$SRC_DIR" pull --ff-only 2>&1; then
+            echo -e "\${RED}[ERROR]\${NC} Git pull failed. Try: sc0710-cli --rebuild or re-run the installer."
+            exit 1
+        fi
+
+        # Read updated version
+        NEW_VER="\${CURRENT_VERSION}"
+        if [[ -f "\$SRC_DIR/version" ]]; then
+            NEW_VER=\$(cat "\$SRC_DIR/version" | tr -d '[:space:]')
+        fi
+
+        # Unload the current module
+        if lsmod | grep -q \$DRV_NAME; then
+            echo -e "\${BLUE}::\${NC} Unloading current module..."
+            \$0 --unload
+        fi
+
+        # Rebuild
+        echo -e "\${BLUE}::\${NC} Rebuilding module for kernel \$(uname -r)..."
+        rm -f "\$SRC_DIR/.built-for-kernel"
+        cd "\$SRC_DIR"
+        make clean 2>/dev/null || true
+        if make KVERSION="\$(uname -r)" -j"\$(nproc)" 2>&1; then
+            echo "\$(uname -r)" > "\$SRC_DIR/.built-for-kernel"
+            chcon -t modules_object_t "\$SRC_DIR/\${DRV_NAME}.ko" 2>/dev/null || true
+            echo -e "\${GREEN}[OK]\${NC} Module rebuilt successfully."
+        else
+            echo -e "\${RED}[ERROR]\${NC} Build failed."
+            exit 1
+        fi
+
+        # Reload the module
+        echo -e "\${BLUE}::\${NC} Loading updated module..."
+        for dep in videodev videobuf2-common videobuf2-v4l2 videobuf2-vmalloc snd-pcm; do
+            modprobe "\$dep" 2>/dev/null || true
+        done
+        if insmod "\$SRC_DIR/\${DRV_NAME}.ko" 2>/dev/null; then
+            echo -e "\${GREEN}[OK]\${NC} Driver updated and loaded (v\${NEW_VER})."
+        else
+            echo -e "\${YELLOW}[WARNING]\${NC} Module rebuilt but failed to load. Try: sc0710-cli --load"
+        fi
         ;;
     --rebuild)
         echo -e "\${BLUE}::\${NC} Forcing module rebuild for kernel \$(uname -r)..."
