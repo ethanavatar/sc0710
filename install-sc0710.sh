@@ -675,8 +675,7 @@ if [[ ${#FAILED_DEPS[@]} -gt 0 ]]; then
 fi
 
 # Load the driver
-DRIVER_ERR=$(modprobe "$DRV_NAME" 2>&1)
-if [[ $? -ne 0 ]]; then
+if ! DRIVER_ERR=$(modprobe "$DRV_NAME" 2>&1); then
     echo ""
     error "Failed to load $DRV_NAME module."
     echo -e "  ${YELLOW}Error: ${DRIVER_ERR}${NC}"

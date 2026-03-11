@@ -382,6 +382,11 @@ msg "Setting up driver source..."
 # Clean previous installation
 if [[ -d "$SRC_DIR" ]]; then
     if [[ "$FORCE_INSTALL" == "true" ]] || confirm "Previous installation found. Replace it?" "Y"; then
+        # If the module is currently loaded, try to unload it first
+        if lsmod | grep -q "$DRV_NAME"; then
+            msg2 "Unloading existing module..."
+            rmmod "$DRV_NAME" 2>/dev/null || true
+        fi
         rm -rf "$SRC_DIR"
         log "Removed previous source directory"
     else
@@ -721,8 +726,7 @@ if [[ ${#FAILED_DEPS[@]} -gt 0 ]]; then
 fi
 
 # Load the driver via insmod (cannot use modprobe — /lib/modules/ is read-only)
-DRIVER_ERR=$(insmod "$SRC_DIR/${DRV_NAME}.ko" 2>&1)
-if [[ $? -ne 0 ]]; then
+if ! DRIVER_ERR=$(insmod "$SRC_DIR/${DRV_NAME}.ko" 2>&1); then
     echo ""
     error "Failed to load $DRV_NAME module."
     echo -e "  ${YELLOW}Error: ${DRIVER_ERR}${NC}"

@@ -114,6 +114,7 @@ msg "Installing firmware..."
 
 mkdir -p "$FIRMWARE_STORE"
 cp "$SRC" "$FIRMWARE_STORE/$FIRMWARE_FILE"
+chcon -t firmware_t "$FIRMWARE_STORE/$FIRMWARE_FILE" 2>/dev/null || true
 msg2 "Firmware stored at: $FIRMWARE_STORE/$FIRMWARE_FILE"
 
 # Create a symlink from the standard firmware path if possible.
