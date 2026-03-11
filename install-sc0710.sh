@@ -432,7 +432,7 @@ log "Source verification passed"
 # The Elgato 4K Pro (subsystem 1cfa:0012) requires ECP5 companion FPGA firmware
 # at /lib/firmware/sc0710/SC0710.FWI.HEX. The driver uploads this on every boot.
 # Only run if a 4K Pro card is detected in the system.
-if lspci -nn 2>/dev/null | grep -qi "1cfa:0012"; then
+if lspci -n -v -d 12ab:0710 2>/dev/null | grep -qi "1cfa:0012"; then
     FIRMWARE_PATH="/lib/firmware/sc0710/SC0710.FWI.HEX"
     if [[ ! -f "$FIRMWARE_PATH" ]]; then
         msg "4K Pro detected — extracting ECP5 firmware..."
@@ -465,7 +465,7 @@ fi
 # Install a systemd service that ensures the ECP5 firmware file is present
 # on every boot and triggers a driver reload if the FPGA wasn't programmed.
 # This handles cold boots where the ECP5 SRAM is wiped.
-if lspci -nn 2>/dev/null | grep -qi "1cfa:0012"; then
+if lspci -n -v -d 12ab:0710 2>/dev/null | grep -qi "1cfa:0012"; then
     if systemctl is-enabled sc0710-firmware.service >/dev/null 2>&1; then
         msg2 "4K Pro firmware service already installed and enabled"
     else
@@ -988,7 +988,7 @@ case "\$1" in
         done
         # Fallback: check lspci if driver not loaded
         if [[ "\$IS_4KP" == "false" ]]; then
-            if lspci -d ::0400 -nn 2>/dev/null | grep -qi "1cfa:0012"; then
+            if lspci -n -v -d 12ab:0710 2>/dev/null | grep -qi "1cfa:0012"; then
                 IS_4KP=true
             fi
         fi
