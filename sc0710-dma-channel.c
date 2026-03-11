@@ -182,6 +182,7 @@ static void sc0710_dma_dequeue_video(struct sc0710_dma_channel *ch,
 	u32 src_w = 0, src_h = 0;
 	u32 dst_w = 0, dst_h = 0;
 	u32 scaled_framesize = 0;
+	int any_auto_scaler = 0;
 
 	if (cached_framesize == 0) {
 		dprintk(1, "%s() no format detected, skipping\n", __func__);
@@ -328,6 +329,7 @@ static void sc0710_dma_dequeue_video(struct sc0710_dma_channel *ch,
 				adapt_src_w, adapt_src_h,
 				dst, adapt_dst_w, adapt_dst_h);
 			vb2_set_plane_payload(&vb_buf->vb.vb2_buf, 0, adapt_fs);
+			any_auto_scaler = 1;
 		} else {
 			int len;
 
@@ -382,6 +384,7 @@ static void sc0710_dma_dequeue_video(struct sc0710_dma_channel *ch,
 						adapt_src_w2, adapt_src_h2,
 						dst, adapt_dst_w2, adapt_dst_h2);
 					vb2_set_plane_payload(&vb_buf->vb.vb2_buf, 0, adapt_fs2);
+					any_auto_scaler = 1;
 					goto frame_done;
 				}
 			}
@@ -405,6 +408,7 @@ frame_done:
 
 		spin_unlock_irqrestore(&client->buffer_lock, buf_flags);
 	}
+	dev->auto_scaler_active = any_auto_scaler;
 	ch->frame_sequence++;
 	spin_unlock_irqrestore(&ch->client_list_lock, flags);
 

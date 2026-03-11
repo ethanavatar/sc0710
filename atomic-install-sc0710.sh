@@ -1050,6 +1050,32 @@ case "\$1" in
                         echo -e "   Total timing: \${TIMING}"
                     fi
                 fi
+                
+                # Scaler Status (MK.2 only)
+                SCALER_LINE=\$(echo "\$PROC_INFO" | grep "^      scaler:" | head -1)
+                AUTO_SCALER_LINE=\$(echo "\$PROC_INFO" | grep "^ auto scaler:" | head -1)
+                
+                if [[ -n "\$SCALER_LINE" ]]; then
+                    echo ""
+                    echo -e "\${BLUE}::\${NC} \${BOLD}Scaler Information (MK.2)\${NC}"
+                    SCALER_MODE=\$(echo "\$SCALER_LINE" | sed 's/.*scaler: \([^ ]*.*\)/\1/')
+                    if [[ "\$SCALER_MODE" == "DISABLED" ]]; then
+                        echo -e "   Software Scaler: \${YELLOW}DISABLED\${NC}"
+                    else
+                        echo -e "   Software Scaler: \${GREEN}\${SCALER_MODE}\${NC}"
+                    fi
+
+                    if [[ -n "\$AUTO_SCALER_LINE" ]]; then
+                        AUTO_VAL=\$(echo "\$AUTO_SCALER_LINE" | sed 's/.*auto scaler: \(.*\)/\1/')
+                        if echo "\$AUTO_VAL" | grep -q "ON"; then
+                            echo -e "   Auto Scaler: \${GREEN}ON (Prevented Kernel Panic)\${NC}"
+                            echo -e "     \${YELLOW}⚠ Please restart your streaming/recording software\${NC}"
+                            echo -e "     \${YELLOW}  to restore low latency hardware capture.\${NC}"
+                        else
+                            echo -e "   Auto Scaler: \${BLUE}OFF\${NC}"
+                        fi
+                    fi
+                fi
             else
                 echo -e "   \${RED}○\${NC} Could not read HDMI status"
             fi

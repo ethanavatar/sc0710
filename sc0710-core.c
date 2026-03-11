@@ -293,6 +293,7 @@ static int sc0710_proc_state_show(struct seq_file *m, void *v)
 					dev->fmt->width, dev->fmt->height,
 					out_w, out_h);
 			}
+			seq_printf(m, " auto scaler: %s\n", dev->auto_scaler_active ? "ON (Prevented Kernel Panic)" : "OFF");
 		}
 
 		for (i = 0; i < SC0710_MAX_CHANNELS; i++) {
