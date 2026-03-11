@@ -28,6 +28,7 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
+#include <linux/vmalloc.h>
 
 #include "sc0710.h"
 
@@ -177,21 +178,65 @@ static void sc0710_dma_dequeue_video(struct sc0710_dma_channel *ch,
 	struct sc0710_dev *dev = ch->dev;
 	struct sc0710_client *client;
 	unsigned long flags;
+	int scaler_active = 0;
+	u32 src_w = 0, src_h = 0;
+	u32 dst_w = 0, dst_h = 0;
+	u32 scaled_framesize = 0;
 
 	if (cached_framesize == 0) {
 		dprintk(1, "%s() no format detected, skipping\n", __func__);
 		return;
 	}
 
-	/* Validate DMA transfer size against expected frame size.
-	 * This catches races where resolution changed but buffers haven't been resized yet.
-	 * chain->total_transfer_size is set during allocation and reflects DMA buffer capacity.
+	/* Drop frames during resolution transitions.
+	 * When the detected format changes, cached_framesize reflects the NEW
+	 * resolution, but the DMA chains are still sized for the OLD resolution.
+	 * Delivering these mismatched frames produces split/misaligned images
+	 * and green flickers.  The DMA will be resized shortly by
+	 * sc0710_reset_dma_frame_sync(); until then, discard stale frames.
 	 */
-	if (chain->total_transfer_size > 0 && cached_framesize > (u32)chain->total_transfer_size) {
-		printk_ratelimited(KERN_WARNING "%s: Frame size %u exceeds DMA buffer %d - resolution change in progress?\n",
-			dev->name, cached_framesize, chain->total_transfer_size);
-		/* Continue anyway but cap to the actual DMA buffer size */
-		cached_framesize = chain->total_transfer_size;
+	if (chain->total_transfer_size > 0 &&
+	    cached_framesize != (u32)chain->total_transfer_size) {
+		dprintk(1, "%s() frame size mismatch (%u vs DMA %d) - resolution transition, dropping\n",
+			__func__, cached_framesize, chain->total_transfer_size);
+		return;
+	}
+
+	/* Check if software scaler is active (MK.2 only) */
+	if (dev->board == SC0710_BOARD_ELGATEO_4KP60_MK2 &&
+	    dev->scaler_mode != SCALER_MODE_DISABLED &&
+	    dev->fmt) {
+		src_w = dev->fmt->width;
+		src_h = dev->fmt->height;
+		sc0710_scaler_get_output_size(dev, src_w, src_h, &dst_w, &dst_h);
+
+		/* Only scale if output differs from input */
+		if (dst_w != src_w || dst_h != src_h) {
+			scaled_framesize = dst_w * 2 * dst_h;
+
+			/* Ensure staging buffer is large enough for the source frame */
+			if (!dev->scaler_staging_buf ||
+			    dev->scaler_staging_size < cached_framesize) {
+				if (dev->scaler_staging_buf)
+					vfree(dev->scaler_staging_buf);
+				dev->scaler_staging_buf = vzalloc(cached_framesize);
+				dev->scaler_staging_size = cached_framesize;
+				if (!dev->scaler_staging_buf) {
+					dev->scaler_staging_size = 0;
+					printk_ratelimited(KERN_ERR "%s: Failed to allocate scaler staging buffer (%u bytes)\n",
+						dev->name, cached_framesize);
+					/* Fall through to unscaled path */
+				}
+			}
+
+			if (dev->scaler_staging_buf) {
+				/* Gather scattered DMA data into contiguous staging buffer */
+				int gathered = sc0710_dma_chain_dq_to_ptr(ch, chain,
+					dev->scaler_staging_buf, cached_framesize);
+				if (gathered > 0)
+					scaler_active = 1;
+			}
+		}
 	}
 
 	/* Broadcast frame to all streaming clients */
@@ -201,7 +246,6 @@ static void sc0710_dma_dequeue_video(struct sc0710_dma_channel *ch,
 		unsigned long buf_flags;
 		u8 *dst;
 		unsigned long buffer_size;
-		int len;
 
 		if (!client->streaming)
 			continue;
@@ -222,24 +266,136 @@ static void sc0710_dma_dequeue_video(struct sc0710_dma_channel *ch,
 			continue;
 		}
 
-		/* Validate buffer size against DMA transfer size to prevent overflow.
-		 * This is the final safety check before the actual copy.
-		 */
-		if (chain->total_transfer_size > 0 && (u32)chain->total_transfer_size > buffer_size) {
-			printk_ratelimited(KERN_ERR "%s: DMA size %d exceeds client buffer %lu - dropping frame\n",
-				dev->name, chain->total_transfer_size, buffer_size);
-			spin_unlock_irqrestore(&client->buffer_lock, buf_flags);
-			continue; /* Skip this buffer, don't attempt copy */
-		}
+		if (scaler_active) {
+			/* Scale from staging buffer into client's V4L2 buffer */
+			if (scaled_framesize <= buffer_size) {
+				sc0710_scaler_scale_frame(dev->scaler_staging_buf,
+					src_w, src_h, dst, dst_w, dst_h);
+				vb2_set_plane_payload(&vb_buf->vb.vb2_buf, 0, scaled_framesize);
+			} else {
+				/* Buffer too small for scaled output — drop frame */
+				printk_ratelimited(KERN_ERR "%s: V4L2 buffer %lu too small for scaled frame %u\n",
+					dev->name, buffer_size, scaled_framesize);
+				spin_unlock_irqrestore(&client->buffer_lock, buf_flags);
+				continue;
+			}
+		} else if (cached_framesize > buffer_size && dev->fmt &&
+			   dev->board == SC0710_BOARD_ELGATEO_4KP60_MK2) {
+			/* Resolution changed while client still has old-sized buffers.
+			 * Instead of overflowing the buffer (crash) or dropping the
+			 * frame (black screen), auto-scale to fit the client's buffer.
+			 * Derive the client's expected resolution from its buffer size.
+			 */
+			u32 adapt_src_w = dev->fmt->width;
+			u32 adapt_src_h = dev->fmt->height;
+			u32 adapt_dst_w, adapt_dst_h, adapt_fs;
 
-		/* Copy DMA data to client's buffer - use cached_framesize */
-		if (cached_framesize > buffer_size) {
-			len = sc0710_dma_chain_dq_to_ptr(ch, chain, dst, buffer_size);
-			vb2_set_plane_payload(&vb_buf->vb.vb2_buf, 0, buffer_size);
+			/* Determine what resolution the client's buffer was allocated for.
+			 * buffer_size = width * 2 (YUYV) * height
+			 * We match against known resolutions.
+			 */
+			if (buffer_size >= 3840 * 2 * 2160) {
+				adapt_dst_w = 3840; adapt_dst_h = 2160;
+			} else if (buffer_size >= 2560 * 2 * 1440) {
+				adapt_dst_w = 2560; adapt_dst_h = 1440;
+			} else if (buffer_size >= 1920 * 2 * 1080) {
+				adapt_dst_w = 1920; adapt_dst_h = 1080;
+			} else if (buffer_size >= 1280 * 2 * 720) {
+				adapt_dst_w = 1280; adapt_dst_h = 720;
+			} else {
+				/* Unknown buffer size — drop to avoid corruption */
+				spin_unlock_irqrestore(&client->buffer_lock, buf_flags);
+				continue;
+			}
+			adapt_fs = adapt_dst_w * 2 * adapt_dst_h;
+
+			/* Gather DMA data into staging buffer for scaling */
+			if (!dev->scaler_staging_buf ||
+			    dev->scaler_staging_size < cached_framesize) {
+				if (dev->scaler_staging_buf)
+					vfree(dev->scaler_staging_buf);
+				dev->scaler_staging_buf = vzalloc(cached_framesize);
+				dev->scaler_staging_size = cached_framesize;
+				if (!dev->scaler_staging_buf) {
+					dev->scaler_staging_size = 0;
+					spin_unlock_irqrestore(&client->buffer_lock, buf_flags);
+					continue;
+				}
+			}
+			sc0710_dma_chain_dq_to_ptr(ch, chain,
+				dev->scaler_staging_buf, cached_framesize);
+			sc0710_scaler_scale_frame(dev->scaler_staging_buf,
+				adapt_src_w, adapt_src_h,
+				dst, adapt_dst_w, adapt_dst_h);
+			vb2_set_plane_payload(&vb_buf->vb.vb2_buf, 0, adapt_fs);
 		} else {
-			len = sc0710_dma_chain_dq_to_ptr(ch, chain, dst, cached_framesize);
-			vb2_set_plane_payload(&vb_buf->vb.vb2_buf, 0, cached_framesize);
+			int len;
+
+			/* Normal path: DMA frame fits in client buffer */
+			if (chain->total_transfer_size > 0 && (u32)chain->total_transfer_size > buffer_size) {
+				printk_ratelimited(KERN_ERR "%s: DMA size %d exceeds client buffer %lu - dropping frame\n",
+					dev->name, chain->total_transfer_size, buffer_size);
+				spin_unlock_irqrestore(&client->buffer_lock, buf_flags);
+				continue;
+			}
+
+			/* Check for stride mismatch: if the source frame is smaller
+			 * than the buffer (e.g., 1080P data in 4K buffer), the data
+			 * will be interpreted with the wrong stride by OBS, causing
+			 * heavy corruption. Auto-scale to fill the buffer.
+			 */
+			if (cached_framesize < buffer_size &&
+			    dev->fmt && dev->board == SC0710_BOARD_ELGATEO_4KP60_MK2) {
+				u32 adapt_src_w2 = dev->fmt->width;
+				u32 adapt_src_h2 = dev->fmt->height;
+				u32 adapt_dst_w2, adapt_dst_h2, adapt_fs2;
+
+				/* Derive the target resolution from the buffer size */
+				if (buffer_size >= 3840 * 2 * 2160) {
+					adapt_dst_w2 = 3840; adapt_dst_h2 = 2160;
+				} else if (buffer_size >= 2560 * 2 * 1440) {
+					adapt_dst_w2 = 2560; adapt_dst_h2 = 1440;
+				} else if (buffer_size >= 1920 * 2 * 1080) {
+					adapt_dst_w2 = 1920; adapt_dst_h2 = 1080;
+				} else {
+					/* Buffer matches or unknown — just copy */
+					goto normal_copy;
+				}
+				adapt_fs2 = adapt_dst_w2 * 2 * adapt_dst_h2;
+
+				/* Only scale if resolutions actually differ */
+				if (adapt_dst_w2 != adapt_src_w2 || adapt_dst_h2 != adapt_src_h2) {
+					if (!dev->scaler_staging_buf ||
+					    dev->scaler_staging_size < cached_framesize) {
+						if (dev->scaler_staging_buf)
+							vfree(dev->scaler_staging_buf);
+						dev->scaler_staging_buf = vzalloc(cached_framesize);
+						dev->scaler_staging_size = cached_framesize;
+						if (!dev->scaler_staging_buf) {
+							dev->scaler_staging_size = 0;
+							goto normal_copy;
+						}
+					}
+					sc0710_dma_chain_dq_to_ptr(ch, chain,
+						dev->scaler_staging_buf, cached_framesize);
+					sc0710_scaler_scale_frame(dev->scaler_staging_buf,
+						adapt_src_w2, adapt_src_h2,
+						dst, adapt_dst_w2, adapt_dst_h2);
+					vb2_set_plane_payload(&vb_buf->vb.vb2_buf, 0, adapt_fs2);
+					goto frame_done;
+				}
+			}
+normal_copy:
+			/* Copy DMA data to client's buffer - use cached_framesize */
+			if (cached_framesize > buffer_size) {
+				len = sc0710_dma_chain_dq_to_ptr(ch, chain, dst, buffer_size);
+				vb2_set_plane_payload(&vb_buf->vb.vb2_buf, 0, buffer_size);
+			} else {
+				len = sc0710_dma_chain_dq_to_ptr(ch, chain, dst, cached_framesize);
+				vb2_set_plane_payload(&vb_buf->vb.vb2_buf, 0, cached_framesize);
+			}
 		}
+frame_done:
 
 		vb_buf->vb.vb2_buf.timestamp = ktime_get_ns();
 		vb_buf->vb.sequence = ch->frame_sequence;
@@ -255,6 +411,7 @@ static void sc0710_dma_dequeue_video(struct sc0710_dma_channel *ch,
 	/* Re-set the buffer timeout */
 	mod_timer(&ch->timeout, jiffies + VBUF_TIMEOUT);
 }
+
 
 /* Copy the contains of the audio chain into linux audio subsystem.
  */
