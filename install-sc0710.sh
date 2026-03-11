@@ -434,8 +434,8 @@ log "Source verification passed"
 # Only run if a 4K Pro card is detected in the system.
 if lspci -d ::0400 -nn 2>/dev/null | grep -qi "1cfa:0012"; then
     FIRMWARE_PATH="/lib/firmware/sc0710/SC0710.FWI.HEX"
-    if [[ -f "$FIRMWARE_PATH" ]]; then
-        msg2 "4K Pro firmware already present at $FIRMWARE_PATH"
+    if [[ -f "$FIRMWARE_PATH" ]] && systemctl is-enabled sc0710-firmware.service >/dev/null 2>&1; then
+        msg2 "4K Pro firmware and service already present"
     else
         msg "4K Pro detected — extracting ECP5 firmware..."
         EXTRACT_SCRIPT="$SRC_DEST/extract-firmware.sh"
@@ -724,9 +724,13 @@ save_config() {
         dbg=\$(cat /sys/module/sc0710/parameters/debug 2>/dev/null || echo 0)
     fi
     local img=\$(cat /sys/module/sc0710/parameters/use_status_images 2>/dev/null || echo 1)
+    local smode=0
+    if [[ -f /sys/module/sc0710/parameters/scaler_mode ]]; then
+        smode=\$(cat /sys/module/sc0710/parameters/scaler_mode 2>/dev/null || echo 0)
+    fi
     
     # Write to modprobe config using the C variable name (what module_param exposes)
-    echo "options sc0710 sc0710_debug_mode=\$dbg use_status_images=\$img" > /etc/modprobe.d/sc0710-params.conf
+    echo "options sc0710 sc0710_debug_mode=\$dbg use_status_images=\$img scaler_mode=\$smode" > /etc/modprobe.d/sc0710-params.conf
     echo -e "\${BLUE}[PERSIST]\${NC} Settings saved to /etc/modprobe.d/sc0710-params.conf"
 }
 
@@ -763,6 +767,7 @@ show_help() {
     echo -e "    \${BOLD}-s, --status\${NC}     Show DKMS and module status"
     echo -e "    \${BOLD}-d, --debug\${NC}      Toggle debug mode on/off"
     echo -e "    \${BOLD}-it, --image-toggle\${NC} Toggle status images on/off"
+    echo -e "    \${BOLD}-ss, --software-scaler\${NC} Toggle software scaler modes (MK.2 only)"
     echo -e "    \${BOLD}-U, --update\${NC}     Check for updates and reinstall"
     echo -e "    \${BOLD}-r, -R, --remove\${NC} Completely uninstall driver and CLI"
     echo -e "    \${BOLD}-v, --version\${NC}    Show version information"
@@ -921,6 +926,32 @@ case "\$1" in
                         echo -e "   Total timing: \${TIMING}"
                     fi
                 fi
+                
+                # Scaler Status (MK.2 only)
+                SCALER_LINE=\$(echo "\$PROC_INFO" | grep "^      scaler:" | head -1)
+                AUTO_SCALER_LINE=\$(echo "\$PROC_INFO" | grep "^ auto scaler:" | head -1)
+                
+                if [[ -n "\$SCALER_LINE" ]]; then
+                    echo ""
+                    echo -e "\${BLUE}::\${NC} \${BOLD}Scaler Information (MK.2)\${NC}"
+                    SCALER_MODE=\$(echo "\$SCALER_LINE" | sed 's/.*scaler: \([^ ]*.*\)/\1/')
+                    if [[ "\$SCALER_MODE" == "DISABLED" ]]; then
+                        echo -e "   Software Scaler: \${YELLOW}DISABLED\${NC}"
+                    else
+                        echo -e "   Software Scaler: \${GREEN}\${SCALER_MODE}\${NC}"
+                    fi
+
+                    if [[ -n "\$AUTO_SCALER_LINE" ]]; then
+                        AUTO_VAL=\$(echo "\$AUTO_SCALER_LINE" | sed 's/.*auto scaler: \(.*\)/\1/')
+                        if echo "\$AUTO_VAL" | grep -q "ON"; then
+                            echo -e "   Auto Scaler: \${GREEN}ON (Prevented Kernel Panic)\${NC}"
+                            echo -e "     \${YELLOW}⚠ Please restart your streaming/recording software\${NC}"
+                            echo -e "     \${YELLOW}  to restore low latency hardware capture.\${NC}"
+                        else
+                            echo -e "   Auto Scaler: \${BLUE}OFF\${NC}"
+                        fi
+                    fi
+                fi
             else
                 echo -e "   \${RED}○\${NC} Could not read HDMI status"
             fi
@@ -1068,6 +1099,24 @@ case "\$1" in
         fi
         save_config
         ;;
+    -ss|--software-scaler)
+        if [[ ! -f /sys/module/sc0710/parameters/scaler_mode ]]; then
+            echo -e "\${RED}[ERROR]\${NC} Module not loaded. Load it first with: sc0710-cli --load"
+            exit 1
+        fi
+        CURRENT=\$(cat /sys/module/sc0710/parameters/scaler_mode)
+        if [[ "\$CURRENT" == "0" || -z "\$CURRENT" ]]; then
+            echo 1 > /sys/module/sc0710/parameters/scaler_mode
+            echo -e "\${GREEN}[OK]\${NC} Software Scaler enabled: Upscale Mode (to 4K)"
+        elif [[ "\$CURRENT" == "1" ]]; then
+            echo 2 > /sys/module/sc0710/parameters/scaler_mode
+            echo -e "\${YELLOW}[OK]\${NC} Software Scaler changed: Downscale Mode (to 1080P)"
+        else
+            echo 0 > /sys/module/sc0710/parameters/scaler_mode
+            echo -e "\${BLUE}[OK]\${NC} Software Scaler disabled"
+        fi
+        save_config
+        ;;
 
     -U|--update)
         echo -e "\${BLUE}::\${NC} Checking for updates..."
@@ -1191,6 +1240,7 @@ echo -e "      ${BOLD}sc0710-cli -u${NC}  or  ${BOLD}--unload${NC}   Unload driv
 echo -e "      ${BOLD}sc0710-cli --restart${NC}        Reload driver"
 echo -e "      ${BOLD}sc0710-cli -d${NC}  or  ${BOLD}--debug${NC}    Toggle debug output"
 echo -e "      ${BOLD}sc0710-cli -it${NC} or  ${BOLD}--image-toggle${NC}  Toggle status images"
+echo -e "      ${BOLD}sc0710-cli -ss${NC} or  ${BOLD}--software-scaler${NC} Toggle software scaler (MK.2)"
 echo -e ""
 echo -e "      ${BOLD}sc0710-cli -U${NC}  or  ${BOLD}--update${NC}   Pull latest & rebuild"
 echo -e "      ${BOLD}sc0710-cli -r/R${NC} or ${BOLD}--remove${NC} Complete uninstall"
