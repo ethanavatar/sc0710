@@ -77,7 +77,6 @@
 extern unsigned int sc0710_debug_mode;
 extern unsigned int auto_scaler;
 extern unsigned int procedural_timings;
-extern unsigned int force_software_scaling;
 extern unsigned int dma_resync_validate_frames;
 extern unsigned int dma_resync_tear_streak_required;
 extern unsigned int dma_resync_max_tear_retries;
@@ -108,7 +107,7 @@ extern unsigned int refresh_rate_resync_delay_ms;
 #define SC0710_BOARD_ELGATEO_4KP60_MK2   1
 #define SC0710_BOARD_ELGATEO_4KP         2
 
-/* Software scaler modes (MK.2 only — 4K Pro has hardware scaler) */
+/* Software scaler modes (available on supported cards) */
 enum sc0710_scaler_mode {
 	SCALER_MODE_DISABLED = 0,
 	SCALER_MODE_UPSCALE  = 1,  /* Scale everything to 3840x2160 */
@@ -429,7 +428,7 @@ struct sc0710_dev {
 	u32                        unlocked_no_timing_count; /* Consecutive polls with no lock and no timing */
 	u32                        lock_dropout_count;       /* 4K Pro: consecutive polls with no lock while previously locked */
 
-	/* Software scaler (MK.2 only) */
+	/* Software scaler */
 	enum sc0710_scaler_mode    scaler_mode;
 	u8                        *scaler_staging_buf;  /* Contiguous frame for scaling input */
 	u32                        scaler_staging_size;  /* Current allocation size */
@@ -561,7 +560,7 @@ void sc0710_audio_unregister(struct sc0710_dev *dev);
 int  sc0710_audio_deliver_samples(struct sc0710_dev *dev, struct sc0710_dma_channel *ch,
         const u8 *buf, int bitdepth, int strideBytes, int channels, int samplesPerChannel);
 
-/* -scaler.c (software scaler for MK.2) */
+/* -scaler.c (software scaler) */
 bool sc0710_software_scaler_allowed(const struct sc0710_dev *dev);
 void sc0710_scaler_get_output_size(struct sc0710_dev *dev,
 	u32 src_width, u32 src_height, u32 *out_width, u32 *out_height);

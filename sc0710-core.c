@@ -63,16 +63,11 @@ MODULE_PARM_DESC(msi_enable, "use msi interrupts (def: 1)");
 
 unsigned int scaler_mode = 0;
 module_param(scaler_mode, int, 0644);
-MODULE_PARM_DESC(scaler_mode, "MK.2 software scaler: 0=disabled, 1=upscale 4K, 2=downscale 1080P");
+MODULE_PARM_DESC(scaler_mode, "Software scaler: 0=disabled, 1=upscale 4K, 2=downscale 1080P");
 
 unsigned int auto_scaler = 1;
 module_param(auto_scaler, int, 0644);
 MODULE_PARM_DESC(auto_scaler, "Automatic safety scaler on mismatch: 0=off, 1=on");
-
-unsigned int force_software_scaling = 0;
-module_param(force_software_scaling, int, 0644);
-MODULE_PARM_DESC(force_software_scaling,
-	"Allow MK.2 software scaler path on all supported cards (testing)");
 
 unsigned int procedural_timings = TIMING_MODE_MERGE;
 module_param(procedural_timings, int, 0644);
@@ -336,7 +331,6 @@ static int sc0710_proc_state_show(struct seq_file *m, void *v)
 			}
 			seq_printf(m, " auto scaler: %s\n", dev->auto_scaler_active ? "ON (Prevented Kernel Panic)" : "OFF");
 			seq_printf(m, " auto scaler cfg: %s\n", auto_scaler ? "ENABLED" : "DISABLED");
-			seq_printf(m, " force sw scaler: %s\n", force_software_scaling ? "ENABLED" : "DISABLED");
 			switch (procedural_timings) {
 			case TIMING_MODE_PROCEDURAL_ONLY:
 				seq_printf(m, " timing calc: PROCEDURAL_ONLY\n");

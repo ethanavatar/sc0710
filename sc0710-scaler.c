@@ -1,7 +1,8 @@
 /*
- *  Software scaler for the Elgato 4K60 Pro MK.2 capture card.
+ *  Software scaler for supported SC0710 capture cards.
  *
- *  The MK.2 lacks the hardware scaler present in the 4K Pro.
+ *  Used as a host-side scaling path where needed for stability and
+ *  transition handling across supported boards.
  *  This module provides YUYV frame scaling with nearest-neighbor
  *  interpolation to upscale (to 3840x2160) or downscale (to 1920x1080).
  *
@@ -33,8 +34,8 @@ const char *sc0710_scaler_mode_name(enum sc0710_scaler_mode mode)
 
 bool sc0710_software_scaler_allowed(const struct sc0710_dev *dev)
 {
-	/* Default policy: MK.2 only. force_software_scaling expands this for testing. */
-	return dev->board == SC0710_BOARD_ELGATEO_4KP60_MK2 || force_software_scaling;
+	return dev->board == SC0710_BOARD_ELGATEO_4KP60_MK2 ||
+	       dev->board == SC0710_BOARD_ELGATEO_4KP;
 }
 
 /* Determine the output resolution based on the current scaler mode.

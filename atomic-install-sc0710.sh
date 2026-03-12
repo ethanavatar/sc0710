@@ -789,16 +789,12 @@ save_config() {
     if [[ -f /sys/module/sc0710/parameters/auto_scaler ]]; then
         autos=\$(cat /sys/module/sc0710/parameters/auto_scaler 2>/dev/null || echo 1)
     fi
-    local fss=0
-    if [[ -f /sys/module/sc0710/parameters/force_software_scaling ]]; then
-        fss=\$(cat /sys/module/sc0710/parameters/force_software_scaling 2>/dev/null || echo 0)
-    fi
     local pt=0
     if [[ -f /sys/module/sc0710/parameters/procedural_timings ]]; then
         pt=\$(cat /sys/module/sc0710/parameters/procedural_timings 2>/dev/null || echo 0)
     fi
 
-    echo "options sc0710 sc0710_debug_mode=\$dbg use_status_images=\$img scaler_mode=\$smode auto_scaler=\$autos force_software_scaling=\$fss procedural_timings=\$pt" > /etc/modprobe.d/sc0710-params.conf
+    echo "options sc0710 sc0710_debug_mode=\$dbg use_status_images=\$img scaler_mode=\$smode auto_scaler=\$autos procedural_timings=\$pt" > /etc/modprobe.d/sc0710-params.conf
     echo -e "\${BLUE}[PERSIST]\${NC} Settings saved to /etc/modprobe.d/sc0710-params.conf"
 }
 
@@ -835,9 +831,8 @@ show_help() {
     echo -e "    \${BOLD}-s, --status\${NC}     Show module and build status"
     echo -e "    \${BOLD}-d, --debug\${NC}      Toggle debug mode on/off"
     echo -e "    \${BOLD}-it, --image-toggle\${NC} Toggle status images on/off"
-    echo -e "    \${BOLD}-ss, --software-scaler\${NC} Toggle software scaler modes (MK.2 only)"
+    echo -e "    \${BOLD}-ss, --software-scaler\${NC} Toggle software scaler modes (all cards)"
     echo -e "    \${BOLD}-as, --toggle-auto-scalar\${NC} Toggle automatic safety scaler on/off"
-    echo -e "    \${BOLD}--force-software-scaling\${NC} Toggle software scaler on all cards (testing)"
     echo -e "    \${BOLD}-pt, --procedural-timings\${NC} Toggle timing calculation mode (merge/procedural/static)"
     echo -e "    \${BOLD}-U, --update\${NC}     Check for updates and reinstall"
     echo -e "    \${BOLD}-r, -R, --remove\${NC} Completely uninstall driver and CLI"
@@ -1072,7 +1067,7 @@ case "\$1" in
                     fi
                 fi
                 
-                # Scaler Status (MK.2 only)
+                # Scaler Status
                 SCALER_LINE=\$(echo "\$PROC_INFO" | grep "^      scaler:" | head -1)
                 AUTO_SCALER_LINE=\$(echo "\$PROC_INFO" | grep "^ auto scaler:" | head -1)
                 AUTO_SCALER_CFG_LINE=\$(echo "\$PROC_INFO" | grep "^ auto scaler cfg:" | head -1)
@@ -1307,22 +1302,6 @@ case "\$1" in
         fi
         save_config
         ;;
-    --force-software-scaling)
-        if [[ ! -f /sys/module/sc0710/parameters/force_software_scaling ]]; then
-            echo -e "\${RED}[ERROR]\${NC} force_software_scaling parameter not available. Reload updated module first."
-            exit 1
-        fi
-        CURRENT=\$(cat /sys/module/sc0710/parameters/force_software_scaling)
-        if [[ "\$CURRENT" == "1" ]]; then
-            echo 0 > /sys/module/sc0710/parameters/force_software_scaling
-            echo -e "\${BLUE}[OK]\${NC} Force software scaling disabled (default policy restored)"
-        else
-            echo 1 > /sys/module/sc0710/parameters/force_software_scaling
-            echo -e "\${YELLOW}[OK]\${NC} Force software scaling enabled (testing mode on all cards)"
-            echo -e "\${YELLOW}⚠ Restart driver + capture software for clean renegotiation.\${NC}"
-        fi
-        save_config
-        ;;
     -pt|--procedural-timings)
         if [[ ! -f /sys/module/sc0710/parameters/procedural_timings ]]; then
             echo -e "\${RED}[ERROR]\${NC} procedural_timings parameter not available. Reload updated module first."
@@ -1489,9 +1468,8 @@ echo -e "      ${BOLD}sc0710-cli -u${NC}  or  ${BOLD}--unload${NC}   Unload driv
 echo -e "      ${BOLD}sc0710-cli --restart${NC}        Reload driver"
 echo -e "      ${BOLD}sc0710-cli -d${NC}  or  ${BOLD}--debug${NC}    Toggle debug output"
 echo -e "      ${BOLD}sc0710-cli -it${NC} or  ${BOLD}--image-toggle${NC}  Toggle status images"
-echo -e "      ${BOLD}sc0710-cli -ss${NC} or  ${BOLD}--software-scaler${NC} Toggle software scaler (MK.2)"
+echo -e "      ${BOLD}sc0710-cli -ss${NC} or  ${BOLD}--software-scaler${NC} Toggle software scaler (all cards)"
 echo -e "      ${BOLD}sc0710-cli -as${NC} or ${BOLD}--toggle-auto-scalar${NC} Toggle automatic safety scaler"
-echo -e "      ${BOLD}sc0710-cli --force-software-scaling${NC} Force software scaler on all cards"
 echo -e "      ${BOLD}sc0710-cli -pt${NC} or ${BOLD}--procedural-timings${NC} Toggle timing calculation mode"
 echo -e ""
 echo -e "      ${BOLD}sc0710-cli --rebuild${NC}        Force rebuild for current kernel"
