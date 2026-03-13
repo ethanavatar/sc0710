@@ -1,13 +1,13 @@
 sc0710-objs := \
-	sc0710-cards.o sc0710-core.o sc0710-i2c.o \
-	sc0710-dma-channel.o sc0710-dma-channels.o \
-	sc0710-dma-chains.o sc0710-dma-chain.o \
-	sc0710-things-per-second.o sc0710-video.o \
-	sc0710-audio.o sc0710-scaler.o
+	lib/sc0710-cards.o lib/sc0710-core.o lib/sc0710-i2c.o \
+	lib/sc0710-dma-channel.o lib/sc0710-dma-channels.o \
+	lib/sc0710-dma-chains.o lib/sc0710-dma-chain.o \
+	lib/sc0710-things-per-second.o lib/sc0710-video.o \
+	lib/sc0710-audio.o lib/sc0710-scaler.o
 
 obj-m += sc0710.o
 
-TARFILES = Makefile *.h *.c *.txt *.md
+TARFILES = Makefile lib/*.h lib/*.c *.txt *.md
 
 KVERSION = $(shell uname -r)
 VERSION := $(shell cat version)
@@ -28,9 +28,10 @@ ifeq ($(origin CC),default)
 endif
 
 all:
-	make -C $(KBUILD_DIR) M=$(PWD) EXTRA_CFLAGS="-DSC0710_DRV_VERSION=\"$(VERSION)\"" $(if $(LLVM),CC=$(CC) LLVM=$(LLVM)) modules
+	make -C $(KBUILD_DIR) M=$(PWD) MO=$(PWD)/build EXTRA_CFLAGS="-DSC0710_DRV_VERSION=\"$(VERSION)\"" $(if $(LLVM),CC=$(CC) LLVM=$(LLVM)) modules
 clean:
-	make -C $(KBUILD_DIR) M=$(PWD) clean
+	rm -rf build/*.o build/*.ko build/*.mod build/*.mod.c build/*.mod.o build/.*.cmd build/.tmp_versions build/lib
+	make -C $(KBUILD_DIR) M=$(PWD) MO=$(PWD)/build clean 2>/dev/null || true
 
 load:	all
 	sudo dmesg -c >/dev/null
@@ -40,7 +41,7 @@ load:	all
 	sudo modprobe videodev
 	#sudo modprobe videobuf-dma-sg
 	sudo modprobe videobuf2-vmalloc
-	sudo insmod ./sc0710.ko \
+	sudo insmod ./build/sc0710.ko \
 		thread_dma_poll_interval_ms=2 \
 		dma_status=0
 

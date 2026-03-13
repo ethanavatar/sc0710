@@ -42,7 +42,7 @@ package() {
     cp -r ./* "${dest}/"
 
     # Remove git directory, packaging files, and installer scripts
-    rm -rf "${dest}/.git" "${dest}/aur" "${dest}/install-sc0710.sh" "${dest}/sc0710.install"
+    rm -rf "${dest}/.git" "${dest}/aur" "${dest}/install-sc0710.sh" "${dest}/atomic-install-sc0710.sh" "${dest}/extract-firmware.sh" "${dest}/atomic-extract-firmware.sh" "${dest}/sc0710.install"
 
     # Ensure dkms.conf is present
     install -Dm644 "dkms.conf" "${dest}/dkms.conf"

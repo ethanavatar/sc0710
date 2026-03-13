@@ -66,14 +66,13 @@ int sc0710_audio_deliver_samples(struct sc0710_dev *dev, struct sc0710_dma_chann
 	for (i = 0; i < samplesPerChannel; i++) {
 		u32 *dst;
 
-		if (chip->buffer_ptr >= runtime->buffer_size)
-			chip->buffer_ptr = 0;
-
 		dst = (u32 *)(runtime->dma_area + chip->buffer_ptr * 4);
 		*dst = *(const u32 *)ptr;
 
 		ptr += strideBytes;
 		chip->buffer_ptr++;
+		if (chip->buffer_ptr >= runtime->buffer_size)
+			chip->buffer_ptr = 0;
 	}
 
 	sc0710_things_per_second_update(&ch->audioSamplesPerSecond,
