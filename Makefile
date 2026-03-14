@@ -10,7 +10,8 @@ obj-m += sc0710.o
 TARFILES = Makefile lib/*.h lib/*.c *.txt *.md
 
 KVERSION = $(shell uname -r)
-VERSION := $(shell cat version)
+# Robust version detection for DKMS and local builds
+VERSION := $(shell cat $(PWD)/version 2>/dev/null || cat version 2>/dev/null || echo "unknown")
 KBUILD_DIR = /lib/modules/$(KVERSION)/build
 
 # Auto-detect kernel compiler.
