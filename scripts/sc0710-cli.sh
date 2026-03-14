@@ -538,22 +538,30 @@ case "$1" in
                 exit 1
             fi
         else
-            DKMS_SRC=""
-            for d in /usr/src/${DRV_NAME}-*; do [[ -d "$d" ]] && DKMS_SRC="$d" && break; done
-            [[ -z "$DKMS_SRC" ]] && { echo -e "${RED}[ERROR]${NC} DKMS source not found."; exit 1; }
-            TEMP_TAR=$(mktemp /tmp/sc0710-update.XXXXXX.tar.gz)
-            curl -fsSL "https://github.com/Nakildias/sc0710/archive/refs/heads/main.tar.gz" -o "$TEMP_TAR" || { rm -f "$TEMP_TAR"; exit 1; }
-            tar -xzf "$TEMP_TAR" --strip-components=1 -C "$DKMS_SRC" || { rm -f "$TEMP_TAR"; exit 1; }
+            # Best fix: Safely stage files in a temporary directory instead of extracting over the old source
+            TEMP_DIR=$(mktemp -d /tmp/sc0710-update.XXXXXX)
+            TEMP_TAR="$TEMP_DIR/main.tar.gz"
+            
+            curl -fsSL "https://github.com/Nakildias/sc0710/archive/refs/heads/main.tar.gz" -o "$TEMP_TAR" || { rm -rf "$TEMP_DIR"; exit 1; }
+            tar -xzf "$TEMP_TAR" --strip-components=1 -C "$TEMP_DIR" || { rm -rf "$TEMP_DIR"; exit 1; }
             rm -f "$TEMP_TAR"
-            NEW_VER=$(basename "$DKMS_SRC" | sed 's/^sc0710-//')
+            
+            REAL_NEW_VER=$(cat "$TEMP_DIR/version" | tr -d '[:space:]')
+            NEW_DKMS_SRC="/usr/src/${DRV_NAME}-${REAL_NEW_VER}"
+            
             lsmod | grep -q "$DRV_NAME" && "$0" --unload
+            
             for ver_item in $(dkms status 2>/dev/null | awk -F'[:,]' '/^sc0710/ {print $1}' | tr -d ' '); do
                 dkms remove "$ver_item" --all >/dev/null 2>&1 || rm -rf "/var/lib/dkms/$(echo "$ver_item" | tr ',' '/')" 2>/dev/null
             done
             rmdir "/var/lib/dkms/${DRV_NAME}" 2>/dev/null || true
-            dkms add -m "$DRV_NAME" -v "$NEW_VER" >/dev/null 2>&1
-            if dkms install -m "$DRV_NAME" -v "$NEW_VER" -k "$(uname -r)" 2>&1; then
-                echo -e "${GREEN}[OK]${NC} Driver updated (v${NEW_VER})."
+            rm -rf /usr/src/${DRV_NAME}-*
+            
+            mv "$TEMP_DIR" "$NEW_DKMS_SRC"
+            
+            dkms add -m "$DRV_NAME" -v "$REAL_NEW_VER" >/dev/null 2>&1
+            if dkms install -m "$DRV_NAME" -v "$REAL_NEW_VER" -k "$(uname -r)" 2>&1; then
+                echo -e "${GREEN}[OK]${NC} Driver updated (v${REAL_NEW_VER})."
             else
                 echo -e "${RED}[ERROR]${NC} DKMS rebuild failed."
                 exit 1
