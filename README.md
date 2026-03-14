@@ -24,18 +24,13 @@ High-performance, multi-client Linux driver for the Elgato 4K60 Pro MK.2 and Elg
 ## Installation
 
 ### Automatic Installation (Recommended)
-Supported on Arch Linux, Debian/Ubuntu, and Fedora. This script handles dependencies, DKMS compilation, and user permissions.
+Unified installer that auto-detects your distro (Atomic or standard) and runs the appropriate flow. Supported on Arch Linux, Debian/Ubuntu, Fedora, and Fedora Atomic (Bazzite, Silverblue, Bluefin, Aurora).
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Nakildias/sc0710/main/install-sc0710.sh)"
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Nakildias/sc0710/main/scripts/install-sc0710.sh)"
 ```
 
-### Fedora Atomic (Bazzite, Silverblue, etc.)
-On immutable distributions, standard DKMS is not supported. Use the atomic-specific installer which sets up a boot-time build service to handle kernel updates.
-
-```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/Nakildias/sc0710/main/atomic-install-sc0710.sh)"
-```
+On Fedora Atomic distros, the installer sets up a boot-time build service instead of DKMS. Both the above URL and `atomic-install-sc0710.sh` work (they use the same unified script).
 
 ### Arch Linux (AUR)
 Install `sc0710-dkms-git` using your preferred helper. Note that the CLI utility is not currently included in the AUR package.
@@ -56,7 +51,7 @@ For other distributions or development usage.
     git clone https://github.com/Nakildias/sc0710
     cd sc0710
     make
-    sudo insmod sc0710.ko
+    sudo insmod build/sc0710.ko
     ```
 
 ## Driver Management (CLI)

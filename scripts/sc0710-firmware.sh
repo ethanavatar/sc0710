@@ -18,7 +18,7 @@
 #      loaded but the ECP5 DONE flag is not set
 #
 # Called by: sc0710-firmware.service (systemd)
-# Installed by: install-sc0710.sh / atomic-install-sc0710.sh
+# Installed by: scripts/install-sc0710.sh (unified installer)
 #
 
 set -eo pipefail
@@ -241,14 +241,14 @@ if lsmod | grep -q "$DRV_NAME"; then
             # Load the driver — method depends on distro type
             if [[ "$DISTRO_TYPE" == "immutable" ]]; then
                 SRC_DIR="/var/lib/sc0710"
-                if [[ -f "$SRC_DIR/${DRV_NAME}.ko" ]]; then
-                    chcon -t modules_object_t "$SRC_DIR/${DRV_NAME}.ko" 2>/dev/null || true
-                    insmod "$SRC_DIR/${DRV_NAME}.ko" 2>>"$LOG_FILE" || {
+                if [[ -f "$SRC_DIR/build/${DRV_NAME}.ko" ]]; then
+                    chcon -t modules_object_t "$SRC_DIR/build/${DRV_NAME}.ko" 2>/dev/null || true
+                    insmod "$SRC_DIR/build/${DRV_NAME}.ko" 2>>"$LOG_FILE" || {
                         log "ERROR: Failed to reload driver via insmod."
                         exit 1
                     }
                 else
-                    log "ERROR: Module file not found at $SRC_DIR/${DRV_NAME}.ko"
+                    log "ERROR: Module file not found at $SRC_DIR/build/${DRV_NAME}.ko"
                     exit 1
                 fi
             else
