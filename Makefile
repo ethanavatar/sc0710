@@ -14,17 +14,14 @@ VERSION := $(shell cat version)
 KBUILD_DIR = /lib/modules/$(KVERSION)/build
 
 # Auto-detect kernel compiler.
-# Distributions like CachyOS ship kernels built with Clang.
-# Building with GCC against a Clang-built kernel fails due to
-# unrecognized command-line options. Detect this and switch to LLVM
-# automatically unless the user has already specified CC or LLVM.
-ifeq ($(origin CC),default)
-  KERNEL_IS_CLANG := $(shell grep -s '^CONFIG_CC_IS_CLANG=y' $(KBUILD_DIR)/.config 2>/dev/null)
-  ifneq ($(KERNEL_IS_CLANG),)
-    $(info Auto-detected Clang-built kernel, using LLVM toolchain)
-    CC = clang
-    LLVM = 1
-  endif
+# Modern distributions correctly use the LLVM toolchain.
+# We must force LLVM if the kernel was built with it, explicitly 
+# ignoring legacy GCC variables that DKMS might inject.
+KERNEL_IS_CLANG := $(shell grep -s '^CONFIG_CC_IS_CLANG=y' $(KBUILD_DIR)/.config 2>/dev/null)
+ifneq ($(KERNEL_IS_CLANG),)
+  $(info Auto-detected Clang-built kernel, forcing LLVM toolchain)
+  CC = clang
+  LLVM = 1
 endif
 
 all:
