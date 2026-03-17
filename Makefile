@@ -26,9 +26,17 @@ ifneq ($(KERNEL_IS_CLANG),)
 endif
 
 all:
-	make -C $(KBUILD_DIR) M=$(PWD) MO=$(PWD)/build EXTRA_CFLAGS="-DSC0710_DRV_VERSION=\"$(VERSION)\"" $(if $(LLVM),CC=$(CC) LLVM=$(LLVM)) modules
+	make -C $(KBUILD_DIR) M=$(PWD) MO=$(PWD)/build EXTRA_CFLAGS="-DSC0710_DRV_VERSION_RAW=$(VERSION)" $(if $(LLVM),CC=$(CC) LLVM=$(LLVM)) modules
+	@# Fallback for kernels < 6.13 where MO= is not supported:
+	@# the .ko ends up at the source root instead of build/.
+	@mkdir -p build
+	@if [ -f sc0710.ko ] && [ ! -f build/sc0710.ko ]; then \
+		cp sc0710.ko build/sc0710.ko; \
+	fi
 clean:
 	rm -rf build/*.o build/*.ko build/*.mod build/*.mod.c build/*.mod.o build/.*.cmd build/.tmp_versions build/lib
+	rm -f sc0710.ko sc0710.o sc0710.mod sc0710.mod.c sc0710.mod.o .module-common.o Module.symvers modules.order .sc0710*.cmd .module-common*.cmd .modules*.cmd
+	rm -rf .tmp_versions
 	make -C $(KBUILD_DIR) M=$(PWD) MO=$(PWD)/build clean 2>/dev/null || true
 
 load:	all
